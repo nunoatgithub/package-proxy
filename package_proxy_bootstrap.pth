@@ -1,0 +1,1 @@
+import os; enabled = os.environ.get('PACKAGE_PROXY_TARGET'); enabled and __import__('package_proxy'); import sys; print("package_proxy successfully imported", file=sys.stderr)
