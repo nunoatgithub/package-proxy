@@ -129,7 +129,7 @@ class LocalApi(api.ProxyApi):
         sys.modules = InspectDict("sys.modules", sys.modules)
         self._package_root = package_root
         self._objects = InspectDict("server-dictionary")
-        self._next_id = 0
+        self._index = 0
         sys.meta_path.insert(0, RemoteModuleFinder(self._ROOT))
 
     def get_module(self, fullname) -> Any:
@@ -137,9 +137,9 @@ class LocalApi(api.ProxyApi):
         remote_name = _remote_prefix + fullname
         module = self._import_module(remote_name)
         assert type(module.__loader__) is RemoteLoader
-        self._next_id += 1
-        self._objects[self._next_id] = module
-        return self._next_id
+        self._index += 1
+        self._objects[self._index] = module
+        return self._index
 
     def get_attr(self, proxy_id, item):
         obj = self._objects[proxy_id]
@@ -149,10 +149,11 @@ class LocalApi(api.ProxyApi):
         obj = self._objects[proxy_id]
         return setattr(obj, key, value)
 
-    def call(self, proxy_id, method, *args, **kwargs):
-        obj = self._objects[proxy_id]
-        func = getattr(obj, method)
-        return func(*args, **kwargs)
+    def create_object(self, cls: type, *args, **kwargs) -> int:
+        new_obj = cls(*args, **kwargs)
+        self._index += 1
+        self._objects[self._index] = new_obj
+        return self._index
 
     def _under_root_package(self, fullname: str) -> bool:
         return fullname == self._package_root or fullname.startswith(self._package_root + ".")

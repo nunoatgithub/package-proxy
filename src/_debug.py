@@ -11,7 +11,13 @@ import package_proxy
 # import C
 # import C.mod_C1
 from C.mod_C1 import C1_1
-import C.CC
+# import C.CC
+
+def func1(param):
+    print(param)
+
+a = C1_1()
+func1(a)
 
 
 print("-" * 100)

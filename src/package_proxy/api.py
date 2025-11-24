@@ -12,5 +12,5 @@ class ProxyApi(Protocol):
     def set_attr(self, proxy_id, key, value) -> Any:
         ...
 
-    def call(self, proxy_id, method, *args, **kwargs) -> Any:
+    def create_object(self, cls: type, *args, **kwargs) -> int:
         ...
