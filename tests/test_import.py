@@ -1,7 +1,7 @@
 from tests.conftest import PythonInterpreterInitializedWithPath
 
 
-class TestPackageProxy:
+class TestImport:
 
     def test_preconditions(self):
 
@@ -9,6 +9,7 @@ class TestPackageProxy:
 
             python.ok("import A, A.mod_A1")
             python.ok("from A.mod_A1 import aClass, aFunction")
+
             python.nok("from A.mod_A1 import aNonExistingSymbol")
 
             python.nok("import C")
@@ -24,16 +25,17 @@ class TestPackageProxy:
 
     def test_import_proxy(self, with_proxy_bootstrap):
 
-        with PythonInterpreterInitializedWithPath("testbed/client", "src") as python:
+        with PythonInterpreterInitializedWithPath("testbed/client", "src", "tests") as python:
+
+            python.ok("import A")
+            python.nok("import C")
 
             python.setenv_PACKAGE_PROXY_TARGET("C")
+            python.setenv_PACKAGE_PROXY_API_IMPL("_api.LocalApi")
 
-            # python.ok("import A")
-            # python.nok("import B")
-            # python.ok("import C")
-
+            python.ok("import A")
+            python.ok("import C")
             python.ok("import C.mod_C1")
-
 
 
 
