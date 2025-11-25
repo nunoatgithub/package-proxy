@@ -1,18 +1,20 @@
 import logging
 import os
 import sys
+from pathlib import Path
 
 logging.basicConfig(level=logging.ERROR)
 
-os.environ["PACKAGE_PROXY_API_IMPL"]="._api.LocalApi"
-os.environ["PACKAGE_PROXY_TARGET"]="C"
+os.environ["PACKAGE_PROXY.API"]="package_proxy._local_api.LocalApi"
+os.environ["PACKAGE_PROXY.TARGET"]="C"
+os.environ["PACKAGE_PROXY.LOCAL_ROOT"]=str(Path(__file__).resolve().parent.parent / "testbed" / "server")
 
-import package_proxy
-# import C
-# import C.mod_C1
+import package_proxy # normally done by the pth file...
+import C
+import C.mod_C1
 from C.mod_C1 import C1_1
-# import B.BB
-# import C.CB.mod_CB1
+import B.BB
+import C.CB.mod_CB1
 
 
 a = C1_1()

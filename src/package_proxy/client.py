@@ -6,6 +6,7 @@ import importlib.util
 import os
 import sys
 
+from . import PACKAGE_PROXY_TARGET, PACKAGE_PROXY_API
 from .api import ProxyApi
 
 
@@ -25,9 +26,9 @@ class ModuleFinder(importlib.abc.MetaPathFinder):
 
     @staticmethod
     def _get_api_impl(proxy_target: str) -> ProxyApi:
-        api_class_name = os.environ.get("PACKAGE_PROXY_API_IMPL")
+        api_class_name = os.environ.get(PACKAGE_PROXY_API)
         if api_class_name is None:
-            raise ImportError(f"No proxy implementation class defined in PACKAGE_PROXY_API_IMPL")
+            raise ImportError(f"No proxy implementation class defined in {PACKAGE_PROXY_API}")
 
         module_name, _, cls_name = api_class_name.rpartition('.')
         if module_name:
@@ -138,7 +139,7 @@ class _Proxy:
         self._proxy_api.set_attr(self._proxy_id, key, value)
 
 
-target_package = os.environ.get("PACKAGE_PROXY_TARGET")
+target_package = os.environ.get(PACKAGE_PROXY_TARGET)
 if not any(isinstance(f, ModuleFinder) for f in sys.meta_path):
     finder = ModuleFinder(proxy_target=target_package)
     sys.meta_path.insert(0, finder)

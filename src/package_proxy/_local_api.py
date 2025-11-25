@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import os
 import sys
 from importlib import util, machinery
 from importlib.machinery import ModuleSpec
@@ -8,7 +9,7 @@ from pathlib import Path
 from types import ModuleType
 from typing import Any
 
-from package_proxy import api
+from . import api
 from util import InspectDict
 
 
@@ -19,8 +20,8 @@ class ModuleNameMng:
 
     _REMOTE_PREFIX = "__remote__"
 
-    def __init__(self, import_root: str, target_package_name: str) -> None:
-        self._import_root = import_root
+    def __init__(self, target_package_name: str) -> None:
+        self._import_root = Path(os.getenv("PACKAGE_PROXY.LOCAL_ROOT"))
         self.real_package_root = target_package_name
         self.remote_package_root = self._REMOTE_PREFIX + self.real_package_root
 
@@ -155,13 +156,12 @@ class RemoteLoader(importlib.abc.Loader):
 
 class LocalApi(api.ProxyApi):
 
-    def __init__(self, root_package: str):
+    def __init__(self, target_package: str):
         sys.modules = InspectDict("sys.modules", sys.modules)
         self._objects = InspectDict("server-dictionary")
         self._index = 0
 
-        import_root_path = Path(__file__).resolve().parent.parent / "testbed" / "server"
-        self._modname_mng = ModuleNameMng(str(import_root_path), root_package)
+        self._modname_mng = ModuleNameMng(target_package)
         sys.meta_path.insert(0, RemoteModuleFinder(self._modname_mng))
 
     def get_module(self, module_name) -> Any:
