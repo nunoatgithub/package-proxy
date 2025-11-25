@@ -49,14 +49,14 @@ class ModuleLoader(importlib.abc.Loader):
 
     def create_module(self, spec):
         proxy_id = self._proxy_api.get_module(self._fullname)
-        proxy_mod = _ProxyModule(self._fullname, self._proxy_api, proxy_id)
+        proxy_mod = _ModuleProxy(self._fullname, self._proxy_api, proxy_id)
         return proxy_mod
 
     def exec_module(self, module):
         pass
 
 
-class _ProxyModule:
+class _ModuleProxy:
 
     def __init__(self, name: str, proxy_api: ProxyApi, proxy_id: str) -> None:
         object.__setattr__(self, "_proxy_api", proxy_api)
@@ -73,19 +73,17 @@ class _ProxyModule:
         attr = self._proxy_api.get_attr(self._proxy_id, item)
 
         if isinstance(attr, type):
-            proxy_cls = type(
-                attr.__name__,
-                (),
-                {
-                    "_proxy_api": self._proxy_api,
-                    "__module__": self.__name__,
-                    "__new__": lambda cls, *args, **kwargs: ProxyObject(cls._proxy_api,  cls._proxy_api.create_object(attr, *args, **kwargs)),
-                    "__getattr__": lambda this, name: this._proxy_api.get_class_attr(attr, name),
-                }
-            )
-            # Replace in this module so future access is fast
-            object.__setattr__(self, attr.__name__, proxy_cls)
+            proxy_cls = type(item, (), {
+                "__module__": self.__name__,
+                "__new__": lambda cls, *args, **kwargs : _Proxy(self._proxy_api, self._proxy_id, item, *args, **kwargs),
+            })
+            object.__setattr__(self, item, proxy_cls)
             return proxy_cls
+
+        if callable(attr):
+            _callable = lambda *args, **kwargs : self._proxy_api.call(self._proxy_id, item, *args, **kwargs)
+            object.__setattr__(self, item, _callable)
+            return _callable
 
         if item in ["__package__", "__path__"]:
             object.__setattr__(self, item, attr)
@@ -102,14 +100,43 @@ class _ProxyModule:
         return object.__getattribute__(self, name)
 
 
-class ProxyObject:
+class _Proxy:
 
-    def __init__(self, proxy_api: ProxyApi, proxy_id: str):
-        self._proxy_api = proxy_api
-        self._proxy_id = proxy_id
+    def __new__(cls, proxy_api, parent_id, cls_name, *args, **kwargs):
+
+        if not hasattr(cls, "_proxy_api"):
+            cls._proxy_api = proxy_api
+        instance = object.__new__(cls)
+
+        proxy_id = proxy_api.create_object(parent_id, cls_name, *args, **kwargs)
+        object.__setattr__(instance, "_proxy_id", proxy_id)
+
+        return instance
 
     def __getattr__(self, item):
-        return self._proxy_api.get_attr(self._proxy_id, item)
+        attr = self._proxy_api.get_attr(self._proxy_id, item)
+
+        if isinstance(attr, type):
+            proxy_api = self._proxy_api
+            cls_name = item
+            proxy_cls = type(cls_name, (), {
+                "__module__": self.__module__.__name__,
+                "__new__": lambda cls_self, *args, **kwargs: _Proxy(proxy_api, cls_name, *args, **kwargs),
+            })
+            object.__setattr__(self.__class__, item, proxy_cls)
+            return proxy_cls
+
+        if callable(attr):
+            func_name = item
+            _callable = lambda *args, **kwargs : self._proxy_api.call(self._proxy_id, func_name, *args, **kwargs)
+            object.__setattr__(self, func_name, _callable)
+            return _callable
+
+        return attr
+
+    def __setattr__(self, key, value):
+        self._proxy_api.set_attr(self._proxy_id, key, value)
+
 
 target_package = os.environ.get("PACKAGE_PROXY_TARGET")
 if not any(isinstance(f, ModuleFinder) for f in sys.meta_path):
