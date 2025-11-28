@@ -1,6 +1,12 @@
 import inspect
 import logging
+import os
 
+from package_proxy import PACKAGE_PROXY_API_LOGLEVEL
+
+loglevel = os.environ.get(PACKAGE_PROXY_API_LOGLEVEL, "ERROR")
+level = getattr(logging, loglevel.upper(), logging.ERROR)
+logging.basicConfig(level=level)
 
 class InspectDict(dict):
 

@@ -1,2 +1,9 @@
 /.idea/
 /.vscode/settings.json
+/dist/package_proxy-0.1.0.tar.gz
+/dist/package_proxy-0.1.0-py3-none-any.whl
+/src/package_proxy.egg-info/dependency_links.txt
+/src/package_proxy.egg-info/PKG-INFO
+/src/package_proxy.egg-info/requires.txt
+/src/package_proxy.egg-info/SOURCES.txt
+/src/package_proxy.egg-info/top_level.txt

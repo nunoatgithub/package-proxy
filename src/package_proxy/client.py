@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import abc
 import builtins
 import importlib.abc
 import importlib.util
@@ -10,7 +11,7 @@ from . import PACKAGE_PROXY_TARGET, PACKAGE_PROXY_API
 from .api import ProxyApi
 
 
-class ModuleFinder(importlib.abc.MetaPathFinder):
+class ClientModuleFinder(importlib.abc.MetaPathFinder):
     def __init__(self, proxy_target):
         self._proxy_target = proxy_target
         self._proxy_api: ProxyApi | None = None
@@ -59,30 +60,40 @@ class ModuleLoader(importlib.abc.Loader):
 
 class _ModuleProxy:
 
-    def __init__(self, name: str, proxy_api: ProxyApi, proxy_id: str) -> None:
-        object.__setattr__(self, "_proxy_api", proxy_api)
-        object.__setattr__(self, "_proxy_id", proxy_id)
+    def __init__(self, name: str, proxy_api: ProxyApi, proxy_id: int) -> None:
         object.__setattr__(self, "__name__", name)
         object.__setattr__(self, "__loader__", ModuleLoader)
         object.__setattr__(self, "__builtins__", builtins.__dict__)
+
+        object.__setattr__(self, "_proxy_api", proxy_api)
+        object.__setattr__(self, "_proxy_id", proxy_id)
+
+        object.__setattr__(self, "_type_proxy_builder", TypeProxyBuilder(proxy_api, name))
+        object.__setattr__(self, "_callable_proxy_builder", CallableProxyBuilder(proxy_api, proxy_id))
 
     def __getattr__(self, item):
 
         if item in ['__spec__']:
             return None
 
+        # Handle __all__ for 'from module import *'
+        if item == '__all__':
+            try:
+                return self._proxy_api.get_attr(self._proxy_id, item)
+            except (AttributeError, KeyError):
+                # Get the remote module's __dict__ and return public names
+                module_dict = self._proxy_api.get_attr(self._proxy_id, '__dict__')
+                return [name for name in module_dict.keys() if not name.startswith('_')]
+
         attr = self._proxy_api.get_attr(self._proxy_id, item)
 
         if isinstance(attr, type):
-            proxy_cls = type(item, (), {
-                "__module__": self.__name__,
-                "__new__": lambda cls, *args, **kwargs : _Proxy(self._proxy_api, self._proxy_id, item, *args, **kwargs),
-            })
-            object.__setattr__(self, item, proxy_cls)
-            return proxy_cls
+            type_proxy = self._type_proxy_builder.build_proxy_for_type_attr(attr)
+            object.__setattr__(self, item, type_proxy)
+            return type_proxy
 
         if callable(attr):
-            _callable = lambda *args, **kwargs : self._proxy_api.call(self._proxy_id, item, *args, **kwargs)
+            _callable = self._callable_proxy_builder.build_for_attr(attr)
             object.__setattr__(self, item, _callable)
             return _callable
 
@@ -94,52 +105,124 @@ class _ModuleProxy:
     def __setattr__(self, key, value):
         object.__setattr__(self, key, value)
 
-    def __getattribute__(self, name):
-        # if name in ["__dict__"]:
-        #     return self._proxy_api.get_attr(self.proxy_id, name)
-        # else:
-        return object.__getattribute__(self, name)
+
+class TypeProxyBuilder:
+
+    def __init__(self, proxy_api: ProxyApi, module_name: str) -> None:
+        self._proxy_api = proxy_api
+        self._module_name = module_name
+
+    def ProxyMeta(self, type_attr: type, base: type) -> type:
+
+        type_id = getattr(type_attr, "__proxy_id__")
+        return type(
+            f"ProxyMeta<{type_attr.__name__}>",
+            (base,),
+            {
+                '__getattr__':
+                    lambda _type, attr_name: self._get_attr_for_type(type_attr, type_id, attr_name),
+            }
+        )
+
+    def build_proxy_for_type_attr(self, type_attr: type):
+
+        object_proxy_template = self._build_object_proxy_template(type_attr)
+        if issubclass(type_attr, abc.ABC):
+            proxy_cls = self.ProxyMeta(type_attr, abc.ABCMeta)(*object_proxy_template)
+            # Trying to set __abstractractmethods__ in the template itself does not work
+            # ABCMeta cleans that up. So we need to set it here after ABC machinery returns
+            try:
+                abstract_methods = type.__getattribute__(type_attr, "__abstractmethods__")
+                type.__setattr__(proxy_cls, "__abstractmethods__", abstract_methods)
+            except AttributeError:
+                pass
+        else:
+            proxy_cls = self.ProxyMeta(type_attr, type)(*object_proxy_template)
+        return proxy_cls
+
+    def _build_object_proxy_template(self, type_attr: type) -> tuple[str, tuple, dict]:
+
+        type_id = getattr(type_attr, "__proxy_id__")
+
+        object_proxy_name = f"ObjectProxy<{type_attr.__name__}>"
+
+        object_proxy_dict = dict(ObjectProxy.__dict__)
+        object_proxy_dict["_cls_id"] = type_id
+        object_proxy_dict["__module__"] = self._module_name
+        object_proxy_dict["_proxy_api"] = self._proxy_api
+
+        object_proxy_bases = type_attr.__bases__
+
+        return object_proxy_name, object_proxy_bases, object_proxy_dict
+
+    def _get_attr_for_type(self, _type: type, _type_id: int, attr_name: str):
+
+        attr = self._proxy_api.get_attr(_type_id, attr_name)
+
+        if isinstance(attr, type):
+            type_proxy = self.build_proxy_for_type_attr(attr)
+            type.__setattr__(_type, attr_name, type_proxy)
+            return type_proxy
+
+        if callable(attr):
+            _callable = CallableProxyBuilder(self._proxy_api, _type_id).build_for_attr(attr)
+            type.__setattr__(_type, attr_name, _callable)
+            return _callable
+
+        return attr
 
 
-class _Proxy:
+class CallableProxyBuilder:
 
-    def __new__(cls, proxy_api, parent_id, cls_name, *args, **kwargs):
+    def __init__(self, proxy_api: ProxyApi, parent_id: int) -> None:
+        self._proxy_api = proxy_api
+        self._parent_id = parent_id
 
-        if not hasattr(cls, "_proxy_api"):
-            cls._proxy_api = proxy_api
+    def build_for_attr(self, callable_attr):
+
+        proxy_api, parent_id = self._proxy_api, self._parent_id
+
+        def _callable(*args, _func=callable_attr.__name__, **kwargs):
+            return proxy_api.call(parent_id, _func, *args, **kwargs)
+
+        # ABCMeta machinery needs this flag in callables to add them to __abstractmethods__
+        # in subclasses. This needs to be made in addition to setting the __abstractmethods__
+        # itself on the class returned by ABCMeta.
+        try:
+            flag = getattr(callable_attr, '__isabstractmethod__')
+            object.__setattr__(_callable, "__isabstractmethod__", flag)
+        except AttributeError:
+            pass
+
+        return _callable
+
+
+class ObjectProxy:
+
+    def __new__(cls, *args, **kwargs):
         instance = object.__new__(cls)
-
-        proxy_id = proxy_api.create_object(parent_id, cls_name, *args, **kwargs)
+        proxy_id = cls._proxy_api.create_object(cls._cls_id, *args, **kwargs)
         object.__setattr__(instance, "_proxy_id", proxy_id)
-
         return instance
 
     def __getattr__(self, item):
         attr = self._proxy_api.get_attr(self._proxy_id, item)
-
-        if isinstance(attr, type):
-            proxy_api = self._proxy_api
-            cls_name = item
-            proxy_cls = type(cls_name, (), {
-                "__module__": self.__module__.__name__,
-                "__new__": lambda cls_self, *args, **kwargs: _Proxy(proxy_api, cls_name, *args, **kwargs),
-            })
-            object.__setattr__(self.__class__, item, proxy_cls)
-            return proxy_cls
-
         if callable(attr):
-            func_name = item
-            _callable = lambda *args, **kwargs : self._proxy_api.call(self._proxy_id, func_name, *args, **kwargs)
-            object.__setattr__(self, func_name, _callable)
+            _callable = CallableProxyBuilder(self._proxy_api, self._proxy_id).build_for_attr(attr)
+            object.__setattr__(self, item, _callable)
             return _callable
 
         return attr
+
+    @property
+    def __dict__(self):
+        return self._proxy_api.get_attr(self._proxy_id, "__dict__")
 
     def __setattr__(self, key, value):
         self._proxy_api.set_attr(self._proxy_id, key, value)
 
 
 target_package = os.environ.get(PACKAGE_PROXY_TARGET)
-if not any(isinstance(f, ModuleFinder) for f in sys.meta_path):
-    finder = ModuleFinder(proxy_target=target_package)
+if not any(isinstance(f, ClientModuleFinder) for f in sys.meta_path):
+    finder = ClientModuleFinder(proxy_target=target_package)
     sys.meta_path.insert(0, finder)
