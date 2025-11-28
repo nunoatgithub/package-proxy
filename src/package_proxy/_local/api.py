@@ -11,6 +11,7 @@ from typing import Any
 from package_proxy import api, PACKAGE_PROXY_API_LOGLEVEL
 from package_proxy.client import ClientModuleFinder
 from .logger import InspectDict
+from ..api import ProxyApi
 
 _IMPORT_LOCK = threading.Lock()
 
@@ -70,16 +71,17 @@ class LocalApi(api.ProxyApi):
             module = self._import_module(module_name)
         return self._add_object(module)
 
-    def get_attr(self, proxy_id, item):
+    def get_attr(self, proxy_id, item) -> ProxyApi.AttrWrapper:
         obj = self._objects[proxy_id]
         if item == "__dict__":
-            return obj.__dict__
+            return ProxyApi.AttrWrapper(obj.__dict__)
         try:
             attr = getattr(obj, item)
+            api_attr = ProxyApi.AttrWrapper(attr)
             if isinstance(attr, type):
                 proxy_id = self._add_object(attr)
-                type.__setattr__(attr, "__proxy_id__", proxy_id)
-            return attr
+                api_attr.proxy_id = proxy_id
+            return api_attr
         except AttributeError:
             raise
 

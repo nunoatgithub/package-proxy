@@ -79,16 +79,19 @@ class _ModuleProxy:
         # Handle __all__ for 'from module import *'
         if item == '__all__':
             try:
-                return self._proxy_api.get_attr(self._proxy_id, item)
+                api_attr = self._proxy_api.get_attr(self._proxy_id, item)
+                return api_attr.attr
             except (AttributeError, KeyError):
                 # Get the remote module's __dict__ and return public names
-                module_dict = self._proxy_api.get_attr(self._proxy_id, '__dict__')
+                api_attr = self._proxy_api.get_attr(self._proxy_id, '__dict__')
+                module_dict = api_attr.attr
                 return [name for name in module_dict.keys() if not name.startswith('_')]
 
-        attr = self._proxy_api.get_attr(self._proxy_id, item)
+        api_attr = self._proxy_api.get_attr(self._proxy_id, item)
+        attr = api_attr.attr
 
         if isinstance(attr, type):
-            type_proxy = self._type_proxy_builder.build_proxy_for_type_attr(attr)
+            type_proxy = self._type_proxy_builder.build_proxy_for_type_attr(api_attr)
             object.__setattr__(self, item, type_proxy)
             return type_proxy
 
@@ -112,55 +115,63 @@ class TypeProxyBuilder:
         self._proxy_api = proxy_api
         self._module_name = module_name
 
-    def ProxyMeta(self, type_attr: type, base: type) -> type:
+    def ProxyMeta(self, type_attr: ProxyApi.AttrWrapper, base: type) -> type:
 
-        type_id = getattr(type_attr, "__proxy_id__")
+        _type, _type_id = type_attr.attr, type_attr.proxy_id
         return type(
-            f"ProxyMeta<{type_attr.__name__}>",
+            f"ProxyMeta<{_type.__name__}>",
             (base,),
             {
                 '__getattr__':
-                    lambda _type, attr_name: self._get_attr_for_type(type_attr, type_id, attr_name),
+                    lambda type_arg, attr_name_arg: self._get_attr_for_type(type_arg, _type_id, attr_name_arg),
             }
         )
 
-    def build_proxy_for_type_attr(self, type_attr: type):
+    def build_proxy_for_type_attr(self, type_attr: ProxyApi.AttrWrapper):
 
         object_proxy_template = self._build_object_proxy_template(type_attr)
-        if issubclass(type_attr, abc.ABC):
+        if issubclass(type_attr.attr, abc.ABC):
             proxy_cls = self.ProxyMeta(type_attr, abc.ABCMeta)(*object_proxy_template)
             # Trying to set __abstractractmethods__ in the template itself does not work
             # ABCMeta cleans that up. So we need to set it here after ABC machinery returns
             try:
-                abstract_methods = type.__getattribute__(type_attr, "__abstractmethods__")
+                abstract_methods = type.__getattribute__(type_attr.attr, "__abstractmethods__")
                 type.__setattr__(proxy_cls, "__abstractmethods__", abstract_methods)
             except AttributeError:
                 pass
+        elif self._is_pybind_type(type_attr.attr):
+            proxy_cls = self.ProxyMeta(type_attr, type(type_attr.attr))(*object_proxy_template)
         else:
             proxy_cls = self.ProxyMeta(type_attr, type)(*object_proxy_template)
         return proxy_cls
 
-    def _build_object_proxy_template(self, type_attr: type) -> tuple[str, tuple, dict]:
+    @staticmethod
+    def _is_pybind_type(tp: type):
+        meta = type(tp)
+        return meta.__module__ == "pybind11_builtins" and meta.__name__ == "pybind11_type"
 
-        type_id = getattr(type_attr, "__proxy_id__")
+    def _build_object_proxy_template(self, type_attr: ProxyApi.AttrWrapper) -> tuple[str, tuple, dict]:
 
-        object_proxy_name = f"ObjectProxy<{type_attr.__name__}>"
+        _type, _type_id = type_attr.attr, type_attr.proxy_id
+
+        object_proxy_name = f"ObjectProxy<{_type.__name__}>"
 
         object_proxy_dict = dict(ObjectProxy.__dict__)
-        object_proxy_dict["_cls_id"] = type_id
+        object_proxy_dict["_cls_id"] = _type_id
         object_proxy_dict["__module__"] = self._module_name
         object_proxy_dict["_proxy_api"] = self._proxy_api
 
-        object_proxy_bases = type_attr.__bases__
+        object_proxy_bases = _type.__bases__
 
         return object_proxy_name, object_proxy_bases, object_proxy_dict
 
     def _get_attr_for_type(self, _type: type, _type_id: int, attr_name: str):
 
-        attr = self._proxy_api.get_attr(_type_id, attr_name)
+        api_attr: ProxyApi.AttrWrapper= self._proxy_api.get_attr(_type_id, attr_name)
+        attr = api_attr.attr
 
         if isinstance(attr, type):
-            type_proxy = self.build_proxy_for_type_attr(attr)
+            type_proxy = self.build_proxy_for_type_attr(api_attr)
             type.__setattr__(_type, attr_name, type_proxy)
             return type_proxy
 
@@ -201,12 +212,17 @@ class ObjectProxy:
 
     def __new__(cls, *args, **kwargs):
         instance = object.__new__(cls)
-        proxy_id = cls._proxy_api.create_object(cls._cls_id, *args, **kwargs)
+        try:
+            proxy_id = cls._proxy_api.create_object(cls._cls_id, *args, **kwargs)
+        except TypeError:
+            # TODO log this as signal of attempt to create types from outside the target package
+            return instance
         object.__setattr__(instance, "_proxy_id", proxy_id)
         return instance
 
     def __getattr__(self, item):
-        attr = self._proxy_api.get_attr(self._proxy_id, item)
+        api_attr = self._proxy_api.get_attr(self._proxy_id, item)
+        attr = api_attr.attr
         if callable(attr):
             _callable = CallableProxyBuilder(self._proxy_api, self._proxy_id).build_for_attr(attr)
             object.__setattr__(self, item, _callable)
@@ -216,7 +232,8 @@ class ObjectProxy:
 
     @property
     def __dict__(self):
-        return self._proxy_api.get_attr(self._proxy_id, "__dict__")
+        api_attr = self._proxy_api.get_attr(self._proxy_id, "__dict__")
+        return api_attr.attr
 
     def __setattr__(self, key, value):
         self._proxy_api.set_attr(self._proxy_id, key, value)
