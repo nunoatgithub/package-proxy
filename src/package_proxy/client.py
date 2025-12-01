@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import abc
 import builtins
+import functools
 import importlib.abc
 import importlib.util
 import os
@@ -118,37 +119,21 @@ class TypeProxyBuilder:
     def ProxyMeta(self, type_attr: ProxyApi.AttrWrapper, base: type) -> type:
 
         _type, _type_id = type_attr.attr, type_attr.proxy_id
+
+        def _getattr(cls, attr_name):
+            return self._get_attr_for_type(cls, _type_id, attr_name)
+
+        def _call(cls, *args, **kwargs):
+            return base.__call__(cls, *args, **kwargs)
+
         return type(
             f"ProxyMeta<{_type.__name__}>",
             (base,),
             {
-                '__getattr__':
-                    lambda type_arg, attr_name_arg: self._get_attr_for_type(type_arg, _type_id, attr_name_arg),
+                '__getattr__': _getattr,
+                '__call__': _call
             }
         )
-
-    def build_proxy_for_type_attr(self, type_attr: ProxyApi.AttrWrapper):
-
-        object_proxy_template = self._build_object_proxy_template(type_attr)
-        if issubclass(type_attr.attr, abc.ABC):
-            proxy_cls = self.ProxyMeta(type_attr, abc.ABCMeta)(*object_proxy_template)
-            # Trying to set __abstractractmethods__ in the template itself does not work
-            # ABCMeta cleans that up. So we need to set it here after ABC machinery returns
-            try:
-                abstract_methods = type.__getattribute__(type_attr.attr, "__abstractmethods__")
-                type.__setattr__(proxy_cls, "__abstractmethods__", abstract_methods)
-            except AttributeError:
-                pass
-        elif self._is_pybind_type(type_attr.attr):
-            proxy_cls = self.ProxyMeta(type_attr, type(type_attr.attr))(*object_proxy_template)
-        else:
-            proxy_cls = self.ProxyMeta(type_attr, type)(*object_proxy_template)
-        return proxy_cls
-
-    @staticmethod
-    def _is_pybind_type(tp: type):
-        meta = type(tp)
-        return meta.__module__ == "pybind11_builtins" and meta.__name__ == "pybind11_type"
 
     def _build_object_proxy_template(self, type_attr: ProxyApi.AttrWrapper) -> tuple[str, tuple, dict]:
 
@@ -156,14 +141,39 @@ class TypeProxyBuilder:
 
         object_proxy_name = f"ObjectProxy<{_type.__name__}>"
 
+        object_proxy_bases = _type.__bases__
+
         object_proxy_dict = dict(ObjectProxy.__dict__)
+        object_proxy_dict["_cls"] = _type
         object_proxy_dict["_cls_id"] = _type_id
         object_proxy_dict["__module__"] = self._module_name
         object_proxy_dict["_proxy_api"] = self._proxy_api
 
-        object_proxy_bases = _type.__bases__
-
         return object_proxy_name, object_proxy_bases, object_proxy_dict
+
+    def build_proxy_for_type_attr(self, type_attr: ProxyApi.AttrWrapper):
+
+        object_proxy_template = self._build_object_proxy_template(type_attr)
+        proxy_cls = self.ProxyMeta(type_attr, type(type_attr.attr))(*object_proxy_template)
+
+        if issubclass(type_attr.attr, abc.ABC):
+            # proxy_cls = self.ProxyMeta(type_attr, abc.ABCMeta)(*object_proxy_template)
+            # Trying to set __abstractractmethods__ in the template itself does not work
+            # ABCMeta cleans that up. So we need to set it here after ABC machinery returns
+            try:
+                abstract_methods = type.__getattribute__(type_attr.attr, "__abstractmethods__")
+                type.__setattr__(proxy_cls, "__abstractmethods__", abstract_methods)
+            except AttributeError:
+                pass
+        # else:
+        #     proxy_cls = self.ProxyMeta(type_attr, type(type_attr.attr))(*object_proxy_template)
+
+        return proxy_cls
+
+    @staticmethod
+    def _is_pybind_type(tp: type):
+        meta = type(tp)
+        return meta.__module__ == "pybind11_builtins" and meta.__name__ == "pybind11_type"
 
     def _get_attr_for_type(self, _type: type, _type_id: int, attr_name: str):
 
@@ -193,6 +203,7 @@ class CallableProxyBuilder:
 
         proxy_api, parent_id = self._proxy_api, self._parent_id
 
+        @functools.wraps(callable_attr)
         def _callable(*args, _func=callable_attr.__name__, **kwargs):
             return proxy_api.call(parent_id, _func, *args, **kwargs)
 
@@ -211,12 +222,14 @@ class CallableProxyBuilder:
 class ObjectProxy:
 
     def __new__(cls, *args, **kwargs):
-        instance = object.__new__(cls)
+        proxy_id = None
         try:
             proxy_id = cls._proxy_api.create_object(cls._cls_id, *args, **kwargs)
         except TypeError:
             # TODO log this as signal of attempt to create types from outside the target package
-            return instance
+            pass
+        instance = cls._cls(*args, **kwargs)
+        # object.__setattr__(instance, "__mro__", cls._cls.__mro__)
         object.__setattr__(instance, "_proxy_id", proxy_id)
         return instance
 
